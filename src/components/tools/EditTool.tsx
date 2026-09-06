@@ -341,6 +341,10 @@ export function EditTool() {
                     value={ed.text}
                     onChange={(e) => updateText(ed.id, e.target.value)}
                     onFocus={() => setActiveId(ed.id)}
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      setActiveId(ed.id);
+                    }}
                     placeholder="اكتب النص هنا..."
                     dir={containsArabic(ed.text) ? "rtl" : "ltr"}
                     rows={2}
@@ -349,7 +353,10 @@ export function EditTool() {
                   />
                 </div>
                 {activeId === ed.id && (
-                  <div className="mt-1 flex w-fit items-center gap-1 rounded-full border border-line bg-white px-2 py-1 shadow-sm">
+                  <div
+                    onMouseDown={(e) => e.stopPropagation()}
+                    className="mt-1 flex w-fit items-center gap-1 rounded-full border border-line bg-white px-2 py-1 shadow-sm"
+                  >
                     {FONT_SIZES.map((size) => (
                       <button
                         key={size}
