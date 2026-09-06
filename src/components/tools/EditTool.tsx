@@ -10,7 +10,7 @@ import { Eraser, GripVertical, PenSquare, Trash2, Type } from "lucide-react";
 import { FileDropzone } from "@/components/FileDropzone";
 import { ResultCard } from "@/components/ResultCard";
 import { PrivacyNote } from "@/components/PrivacyNote";
-import { renderPageThumbnail, getPdfPageCount, getPageTextBlocks, type PageTextBlock } from "@/lib/pdf/core";
+import { renderPageToCanvas, getPdfPageCount, getPageTextBlocks, type PageTextBlock } from "@/lib/pdf/core";
 import { containsArabic } from "@/lib/pdf/arabicText";
 import {
   applyPdfEdits,
@@ -33,7 +33,7 @@ export function EditTool() {
   const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [page, setPage] = useState(1);
-  const [pageImg, setPageImg] = useState<string | null>(null);
+  const [pageReady, setPageReady] = useState(false);
   const [textBlocks, setTextBlocks] = useState<PageTextBlock[]>([]);
   const [mode, setMode] = useState<Mode>("text");
   const [edits, setEdits] = useState<PdfEdit[]>([]);
@@ -43,6 +43,7 @@ export function EditTool() {
   const [result, setResult] = useState<Blob | null>(null);
 
   const stageRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingId = useRef<{ id: string; startX: number; startY: number } | null>(null);
 
   useEffect(() => {
@@ -57,8 +58,14 @@ export function EditTool() {
   useEffect(() => {
     if (!buffer) return;
     let cancelled = false;
-    renderPageThumbnail(buffer.slice(0), page, 900).then((url) => {
-      if (!cancelled) setPageImg(url);
+    renderPageToCanvas(buffer.slice(0), page, 900).then((rendered) => {
+      if (cancelled) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      canvas.width = rendered.width;
+      canvas.height = rendered.height;
+      canvas.getContext("2d")!.drawImage(rendered, 0, 0);
+      setPageReady(true);
     });
     getPageTextBlocks(buffer.slice(0), page).then((blocks) => {
       if (!cancelled) setTextBlocks(blocks);
@@ -72,6 +79,35 @@ export function EditTool() {
     return textBlocks.find(
       (b) => x >= b.xPct && x <= b.xPct + b.widthPct && y >= b.yPct && y <= b.yPct + b.heightPct
     );
+  }
+
+  /**
+   * Samples the page background just above a box instead of always
+   * filling redactions white, so a colored background (a table cell,
+   * a tinted section, ...) isn't left with a stark white patch.
+   */
+  function sampleBackgroundColor(
+    xPct: number,
+    yPct: number,
+    widthPct: number
+  ): [number, number, number] | undefined {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    try {
+      const ctx = canvas.getContext("2d")!;
+      const px = Math.min(
+        canvas.width - 1,
+        Math.max(0, Math.round((xPct + widthPct / 2) * canvas.width))
+      );
+      const py = Math.min(
+        canvas.height - 1,
+        Math.max(0, Math.round((yPct - 0.004) * canvas.height))
+      );
+      const [r, g, b] = ctx.getImageData(px, py, 1, 1).data;
+      return [r / 255, g / 255, b / 255];
+    } catch {
+      return undefined;
+    }
   }
 
   function relativePoint(clientX: number, clientY: number) {
@@ -102,6 +138,7 @@ export function EditTool() {
             yPct: block.yPct,
             widthPct: block.widthPct,
             heightPct: block.heightPct,
+            color: sampleBackgroundColor(block.xPct, block.yPct, block.widthPct),
           },
         ]);
         setActiveId(id);
@@ -162,10 +199,16 @@ export function EditTool() {
     const { id } = drawingId.current;
     drawingId.current = null;
     setEdits((prev) =>
-      prev.filter((ed) => {
-        if (ed.id !== id || ed.type !== "redact") return true;
-        return ed.widthPct > 0.008 && ed.heightPct > 0.008;
-      })
+      prev
+        .filter((ed) => {
+          if (ed.id !== id || ed.type !== "redact") return true;
+          return ed.widthPct > 0.008 && ed.heightPct > 0.008;
+        })
+        .map((ed) =>
+          ed.id === id && ed.type === "redact"
+            ? { ...ed, color: sampleBackgroundColor(ed.xPct, ed.yPct, ed.widthPct) }
+            : ed
+        )
     );
   }
 
@@ -300,16 +343,12 @@ export function EditTool() {
           className="relative w-full select-none"
           style={{ cursor: mode === "redact" ? "crosshair" : "text" }}
         >
-          {pageImg ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={pageImg}
-              alt={`صفحة ${page}`}
-              className="pointer-events-none block w-full"
-              draggable={false}
-            />
-          ) : (
-            <div className="flex aspect-[3/4] w-full items-center justify-center text-sm text-ink-soft">
+          <canvas
+            ref={canvasRef}
+            className={`pointer-events-none block w-full ${pageReady ? "" : "invisible"}`}
+          />
+          {!pageReady && (
+            <div className="absolute inset-0 flex aspect-[3/4] w-full items-center justify-center text-sm text-ink-soft">
               جاري التحميل...
             </div>
           )}

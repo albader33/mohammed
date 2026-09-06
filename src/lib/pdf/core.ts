@@ -41,6 +41,30 @@ export async function renderPageThumbnail(
   return url;
 }
 
+/** Renders a single page of a PDF onto a canvas, scaled to fit within maxWidth. */
+export async function renderPageToCanvas(
+  data: ArrayBuffer,
+  pageNumber: number,
+  maxWidth = 900
+): Promise<HTMLCanvasElement> {
+  const { doc, destroy } = await loadPdfDocument(data);
+  const page = await doc.getPage(pageNumber);
+  const viewport = page.getViewport({ scale: 1 });
+  const scale = maxWidth / viewport.width;
+  const scaledViewport = page.getViewport({ scale });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(scaledViewport.width);
+  canvas.height = Math.ceil(scaledViewport.height);
+  const context = canvas.getContext("2d")!;
+
+  await page.render({ canvas, canvasContext: context, viewport: scaledViewport })
+    .promise;
+
+  await destroy();
+  return canvas;
+}
+
 /** Renders every page of a PDF to a PNG blob at the given scale. */
 export async function renderAllPagesToBlobs(
   data: ArrayBuffer,

@@ -218,7 +218,7 @@ export async function compressPdf(
   return { blob, originalSize: bytes.byteLength, newSize: outBytes.byteLength };
 }
 
-/** A white box drawn over existing content on one page, to hide/"delete" it. */
+/** A box drawn over existing content on one page, to hide/"delete" it. */
 export interface RedactEdit {
   id: string;
   type: "redact";
@@ -227,6 +227,10 @@ export interface RedactEdit {
   yPct: number; // top edge, 0..1 of page height
   widthPct: number;
   heightPct: number;
+  // Fill color, rgb 0..1. Sampled from the page background around the
+  // covered text so a colored background doesn't turn white; falls
+  // back to white when nothing was sampled (e.g. a hand-drawn box).
+  color?: [number, number, number];
 }
 
 /** A new paragraph of text added at an arbitrary spot on one page. */
@@ -278,7 +282,7 @@ export async function applyPdfEdits(
       y: height - edit.yPct * height - boxHeight,
       width: boxWidth,
       height: boxHeight,
-      color: rgb(1, 1, 1),
+      color: edit.color ? rgb(...edit.color) : rgb(1, 1, 1),
     });
   }
 
