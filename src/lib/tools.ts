@@ -16,6 +16,7 @@ import {
   FileType2,
   FileOutput,
   PenLine,
+  PenSquare,
 } from "lucide-react";
 
 export type ToolCategory = "organize" | "convert" | "edit" | "security";
@@ -146,6 +147,17 @@ export const TOOLS: ToolDef[] = [
     short: "رقّم صفحات الملف تلقائيًا",
     description: "أضف أرقام الصفحات تلقائيًا في أسفل كل صفحة من ملف PDF.",
     icon: Hash,
+    category: "edit",
+    implemented: true,
+    accept: "pdf",
+  },
+  {
+    slug: "edit-content",
+    name: "تعديل محتوى PDF",
+    short: "احذف فقرات وأضف نصوصًا جديدة",
+    description:
+      "غطِّ أي فقرة أو جزء من محتوى الملف، وأضف فقرات نصية جديدة في أي مكان تريده — بالعربي أو الإنجليزي.",
+    icon: PenSquare,
     category: "edit",
     implemented: true,
     accept: "pdf",

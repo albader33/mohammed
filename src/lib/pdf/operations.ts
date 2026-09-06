@@ -1,4 +1,6 @@
 import { PDFDocument, degrees, rgb, StandardFonts } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
+import { layoutParagraph } from "./arabicText";
 
 export async function fileToArrayBuffer(file: File): Promise<ArrayBuffer> {
   return file.arrayBuffer();
@@ -214,4 +216,103 @@ export async function compressPdf(
   const outBytes = await doc.save({ useObjectStreams: true, addDefaultPage: false });
   const blob = new Blob([new Uint8Array(outBytes)], { type: "application/pdf" });
   return { blob, originalSize: bytes.byteLength, newSize: outBytes.byteLength };
+}
+
+/** A white box drawn over existing content on one page, to hide/"delete" it. */
+export interface RedactEdit {
+  id: string;
+  type: "redact";
+  page: number; // 1-based
+  xPct: number; // left edge, 0..1 of page width
+  yPct: number; // top edge, 0..1 of page height
+  widthPct: number;
+  heightPct: number;
+}
+
+/** A new paragraph of text added at an arbitrary spot on one page. */
+export interface TextEdit {
+  id: string;
+  type: "text";
+  page: number; // 1-based
+  xPct: number; // left edge of the text box, 0..1 of page width
+  yPct: number; // top edge of the text box, 0..1 of page height
+  widthPct: number; // box width, 0..1 of page width
+  fontSize: number; // pt
+  color: [number, number, number]; // rgb 0..1
+  text: string;
+}
+
+export type PdfEdit = RedactEdit | TextEdit;
+
+const ARABIC_FONT_URL = "/fonts/Amiri-Regular.ttf";
+
+let cachedArabicFontBytes: ArrayBuffer | null = null;
+async function getArabicFontBytes(): Promise<ArrayBuffer> {
+  if (!cachedArabicFontBytes) {
+    const res = await fetch(ARABIC_FONT_URL);
+    cachedArabicFontBytes = await res.arrayBuffer();
+  }
+  return cachedArabicFontBytes;
+}
+
+/** Apply a set of redaction boxes and/or new text paragraphs to a PDF. */
+export async function applyPdfEdits(
+  file: File,
+  edits: PdfEdit[]
+): Promise<Blob> {
+  const bytes = await fileToArrayBuffer(file);
+  const doc = await PDFDocument.load(bytes);
+  const pages = doc.getPages();
+
+  const redactions = edits.filter((e): e is RedactEdit => e.type === "redact");
+  const textEdits = edits.filter((e): e is TextEdit => e.type === "text");
+
+  for (const edit of redactions) {
+    const page = pages[edit.page - 1];
+    if (!page) continue;
+    const { width, height } = page.getSize();
+    const boxWidth = edit.widthPct * width;
+    const boxHeight = edit.heightPct * height;
+    page.drawRectangle({
+      x: edit.xPct * width,
+      y: height - edit.yPct * height - boxHeight,
+      width: boxWidth,
+      height: boxHeight,
+      color: rgb(1, 1, 1),
+    });
+  }
+
+  if (textEdits.length > 0) {
+    doc.registerFontkit(fontkit);
+    // subset:true corrupts glyphs that appear only once in the drawn text
+    // with this pdf-lib/fontkit combo, so the full font is embedded instead.
+    const font = await doc.embedFont(await getArabicFontBytes(), { subset: false });
+
+    for (const edit of textEdits) {
+      const page = pages[edit.page - 1];
+      if (!page || !edit.text.trim()) continue;
+      const { width, height } = page.getSize();
+      const boxX = edit.xPct * width;
+      const boxTop = edit.yPct * height;
+      const boxWidth = edit.widthPct * width;
+      const lineHeight = edit.fontSize * 1.5;
+
+      const lines = layoutParagraph(edit.text, font, edit.fontSize, boxWidth);
+      lines.forEach((line, i) => {
+        if (!line.text) return;
+        const lineTop = boxTop + i * lineHeight;
+        const x = line.isRtl ? boxX + boxWidth - line.width : boxX;
+        page.drawText(line.text, {
+          x,
+          y: height - lineTop - edit.fontSize,
+          size: edit.fontSize,
+          font,
+          color: rgb(...edit.color),
+        });
+      });
+    }
+  }
+
+  const outBytes = await doc.save();
+  return new Blob([new Uint8Array(outBytes)], { type: "application/pdf" });
 }
