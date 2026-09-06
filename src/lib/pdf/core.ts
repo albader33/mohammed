@@ -77,3 +77,48 @@ export async function getPdfPageCount(data: ArrayBuffer): Promise<number> {
   await destroy();
   return count;
 }
+
+export interface PageTextBlock {
+  text: string;
+  xPct: number; // left edge, 0..1 of page width
+  yPct: number; // top edge, 0..1 of page height
+  widthPct: number;
+  heightPct: number;
+}
+
+/**
+ * Locates each run of text on a page so it can be selected and removed
+ * precisely (its own tight box) instead of a hand-drawn, likely
+ * oversized rectangle. transform[4]/[5] is the run's baseline-left
+ * origin and `height` its font size (both in PDF points) — an
+ * ascent/descent split of 0.8/0.2 approximates the run's full glyph
+ * height above and below that baseline, close enough for selection.
+ */
+export async function getPageTextBlocks(
+  data: ArrayBuffer,
+  pageNumber: number
+): Promise<PageTextBlock[]> {
+  const { doc, destroy } = await loadPdfDocument(data);
+  const page = await doc.getPage(pageNumber);
+  const viewport = page.getViewport({ scale: 1 });
+  const content = await page.getTextContent();
+  const { width: pageWidth, height: pageHeight } = viewport;
+
+  const blocks: PageTextBlock[] = [];
+  for (const item of content.items) {
+    if (!("str" in item) || !item.str.trim() || !item.width || !item.height) continue;
+    const [, , , , x, baseline] = item.transform;
+    const top = baseline + item.height * 0.8;
+    const bottom = baseline - item.height * 0.2;
+    blocks.push({
+      text: item.str,
+      xPct: x / pageWidth,
+      yPct: (pageHeight - top) / pageHeight,
+      widthPct: item.width / pageWidth,
+      heightPct: (top - bottom) / pageHeight,
+    });
+  }
+
+  await destroy();
+  return blocks;
+}

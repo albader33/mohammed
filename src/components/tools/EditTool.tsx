@@ -10,7 +10,7 @@ import { Eraser, GripVertical, PenSquare, Trash2, Type } from "lucide-react";
 import { FileDropzone } from "@/components/FileDropzone";
 import { ResultCard } from "@/components/ResultCard";
 import { PrivacyNote } from "@/components/PrivacyNote";
-import { renderPageThumbnail, getPdfPageCount } from "@/lib/pdf/core";
+import { renderPageThumbnail, getPdfPageCount, getPageTextBlocks, type PageTextBlock } from "@/lib/pdf/core";
 import { containsArabic } from "@/lib/pdf/arabicText";
 import {
   applyPdfEdits,
@@ -34,6 +34,7 @@ export function EditTool() {
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [pageImg, setPageImg] = useState<string | null>(null);
+  const [textBlocks, setTextBlocks] = useState<PageTextBlock[]>([]);
   const [mode, setMode] = useState<Mode>("text");
   const [edits, setEdits] = useState<PdfEdit[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -59,10 +60,19 @@ export function EditTool() {
     renderPageThumbnail(buffer.slice(0), page, 900).then((url) => {
       if (!cancelled) setPageImg(url);
     });
+    getPageTextBlocks(buffer.slice(0), page).then((blocks) => {
+      if (!cancelled) setTextBlocks(blocks);
+    });
     return () => {
       cancelled = true;
     };
   }, [buffer, page]);
+
+  function findTextBlockAt(x: number, y: number): PageTextBlock | undefined {
+    return textBlocks.find(
+      (b) => x >= b.xPct && x <= b.xPct + b.widthPct && y >= b.yPct && y <= b.yPct + b.heightPct
+    );
+  }
 
   function relativePoint(clientX: number, clientY: number) {
     const rect = stageRef.current!.getBoundingClientRect();
@@ -77,6 +87,26 @@ export function EditTool() {
     const id = newId();
 
     if (mode === "redact") {
+      const block = findTextBlockAt(x, y);
+      if (block) {
+        // A detected line of text: redact its exact bounds instead of
+        // whatever the user could hand-draw, so nothing beyond that
+        // line (a watermark passing behind it, e.g.) gets covered.
+        setEdits((prev) => [
+          ...prev,
+          {
+            id,
+            type: "redact",
+            page,
+            xPct: block.xPct,
+            yPct: block.yPct,
+            widthPct: block.widthPct,
+            heightPct: block.heightPct,
+          },
+        ]);
+        setActiveId(id);
+        return;
+      }
       const edit: RedactEdit = {
         id,
         type: "redact",
@@ -258,7 +288,7 @@ export function EditTool() {
       <p className="text-sm text-ink-soft">
         {mode === "text"
           ? "اضغط في أي مكان بالصفحة لإضافة صندوق نص جديد، ثم اكتب فيه. اسحب من المقبض بالأعلى لتحريكه."
-          : "اسحب لرسم مستطيل أبيض يغطي الفقرة أو الجزء الذي تريد حذفه من الصفحة."}
+          : "اضغط على أي سطر نص (محدّد بإطار منقّط) لحذفه بحدوده الدقيقة تلقائيًا، أو اسحب يدويًا لتغطية أي جزء آخر من الصفحة."}
       </p>
 
       <div className="overflow-hidden rounded-2xl border border-line bg-white">
@@ -283,6 +313,20 @@ export function EditTool() {
               جاري التحميل...
             </div>
           )}
+
+          {mode === "redact" &&
+            textBlocks.map((b, i) => (
+              <div
+                key={i}
+                className="pointer-events-none absolute border border-dashed border-brand/50"
+                style={{
+                  left: `${b.xPct * 100}%`,
+                  top: `${b.yPct * 100}%`,
+                  width: `${b.widthPct * 100}%`,
+                  height: `${b.heightPct * 100}%`,
+                }}
+              />
+            ))}
 
           {pageEdits.map((ed) =>
             ed.type === "redact" ? (
