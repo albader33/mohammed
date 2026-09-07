@@ -82,29 +82,46 @@ export function EditTool() {
   }
 
   /**
-   * Samples the page background just above a box instead of always
-   * filling redactions white, so a colored background (a table cell,
-   * a tinted section, ...) isn't left with a stark white patch.
+   * Samples the page background behind a box instead of always filling
+   * redactions white, so a colored background (a table cell, a tinted
+   * field, ...) isn't left with a stark white patch. Sampling just
+   * outside the box misses backgrounds sized to exactly match the
+   * text, so this reads a handful of spots just inside its corners
+   * (where glyph ink rarely reaches) and keeps the brightest one, on
+   * the assumption that ink is darker than whatever is behind it.
    */
   function sampleBackgroundColor(
     xPct: number,
     yPct: number,
-    widthPct: number
+    widthPct: number,
+    heightPct: number
   ): [number, number, number] | undefined {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
     try {
       const ctx = canvas.getContext("2d")!;
-      const px = Math.min(
-        canvas.width - 1,
-        Math.max(0, Math.round((xPct + widthPct / 2) * canvas.width))
-      );
-      const py = Math.min(
-        canvas.height - 1,
-        Math.max(0, Math.round((yPct - 0.004) * canvas.height))
-      );
-      const [r, g, b] = ctx.getImageData(px, py, 1, 1).data;
-      return [r / 255, g / 255, b / 255];
+      const toPx = (px: number, py: number): [number, number] => [
+        Math.min(canvas.width - 1, Math.max(0, Math.round(px * canvas.width))),
+        Math.min(canvas.height - 1, Math.max(0, Math.round(py * canvas.height))),
+      ];
+      const corners: [number, number][] = [
+        [xPct + widthPct * 0.02, yPct + heightPct * 0.1],
+        [xPct + widthPct * 0.98, yPct + heightPct * 0.1],
+        [xPct + widthPct * 0.02, yPct + heightPct * 0.9],
+        [xPct + widthPct * 0.98, yPct + heightPct * 0.9],
+      ];
+      let best: [number, number, number] | undefined;
+      let bestLuma = -1;
+      for (const [x, y] of corners) {
+        const [px, py] = toPx(x, y);
+        const [r, g, b] = ctx.getImageData(px, py, 1, 1).data;
+        const luma = r * 0.299 + g * 0.587 + b * 0.114;
+        if (luma > bestLuma) {
+          bestLuma = luma;
+          best = [r / 255, g / 255, b / 255];
+        }
+      }
+      return best;
     } catch {
       return undefined;
     }
@@ -138,7 +155,7 @@ export function EditTool() {
             yPct: block.yPct,
             widthPct: block.widthPct,
             heightPct: block.heightPct,
-            color: sampleBackgroundColor(block.xPct, block.yPct, block.widthPct),
+            color: sampleBackgroundColor(block.xPct, block.yPct, block.widthPct, block.heightPct),
           },
         ]);
         setActiveId(id);
@@ -206,7 +223,7 @@ export function EditTool() {
         })
         .map((ed) =>
           ed.id === id && ed.type === "redact"
-            ? { ...ed, color: sampleBackgroundColor(ed.xPct, ed.yPct, ed.widthPct) }
+            ? { ...ed, color: sampleBackgroundColor(ed.xPct, ed.yPct, ed.widthPct, ed.heightPct) }
             : ed
         )
     );
