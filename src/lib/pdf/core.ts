@@ -108,6 +108,7 @@ export interface PageTextBlock {
   yPct: number; // top edge, 0..1 of page height
   widthPct: number;
   heightPct: number;
+  fontSize: number; // pt, so a moved copy of this run can reuse it
 }
 
 /**
@@ -140,6 +141,7 @@ export async function getPageTextBlocks(
       yPct: (pageHeight - top) / pageHeight,
       widthPct: item.width / pageWidth,
       heightPct: (top - bottom) / pageHeight,
+      fontSize: item.height,
     });
   }
 

@@ -6,7 +6,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { Eraser, GripVertical, PenSquare, Trash2, Type } from "lucide-react";
+import { Eraser, GripVertical, Move, PenSquare, Trash2, Type } from "lucide-react";
 import { FileDropzone } from "@/components/FileDropzone";
 import { ResultCard } from "@/components/ResultCard";
 import { PrivacyNote } from "@/components/PrivacyNote";
@@ -20,7 +20,7 @@ import {
   type RedactEdit,
 } from "@/lib/pdf/operations";
 
-type Mode = "text" | "redact";
+type Mode = "text" | "redact" | "move";
 
 const FONT_SIZES = [14, 18, 24, 32];
 
@@ -172,6 +172,39 @@ export function EditTool() {
       };
       setEdits((prev) => [...prev, edit]);
       drawingId.current = { id, startX: x, startY: y };
+      setActiveId(id);
+    } else if (mode === "move") {
+      const block = findTextBlockAt(x, y);
+      if (!block) return;
+      // "Moving" existing text isn't a real PDF operation, so this
+      // covers the original spot (like the redact tool) and drops an
+      // editable, pre-filled, draggable text box in its place —
+      // reusing the same font size so it doesn't look out of place.
+      const redactId = newId();
+      setEdits((prev) => [
+        ...prev,
+        {
+          id: redactId,
+          type: "redact",
+          page,
+          xPct: block.xPct,
+          yPct: block.yPct,
+          widthPct: block.widthPct,
+          heightPct: block.heightPct,
+          color: sampleBackgroundColor(block.xPct, block.yPct, block.widthPct, block.heightPct),
+        },
+        {
+          id,
+          type: "text",
+          page,
+          xPct: block.xPct,
+          yPct: block.yPct,
+          widthPct: Math.min(1 - block.xPct, block.widthPct * 1.2),
+          fontSize: Math.round(block.fontSize),
+          color: [0.06, 0.06, 0.1],
+          text: block.text,
+        },
+      ]);
       setActiveId(id);
     } else {
       setEdits((prev) => [
@@ -342,13 +375,24 @@ export function EditTool() {
           >
             <Eraser size={14} /> حذف فقرة
           </button>
+          <button
+            onClick={() => setMode("move")}
+            className={`flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-bold transition ${
+              mode === "move" ? "bg-brand text-white" : "border border-line text-ink-soft hover:border-brand/40"
+            }`}
+          >
+            <Move size={14} /> نقل نص
+          </button>
         </div>
       </div>
 
       <p className="text-sm text-ink-soft">
-        {mode === "text"
-          ? "اضغط في أي مكان بالصفحة لإضافة صندوق نص جديد، ثم اكتب فيه. اسحب من المقبض بالأعلى لتحريكه."
-          : "اضغط على أي سطر نص (محدّد بإطار منقّط) لحذفه بحدوده الدقيقة تلقائيًا، أو اسحب يدويًا لتغطية أي جزء آخر من الصفحة."}
+        {mode === "text" &&
+          "اضغط في أي مكان بالصفحة لإضافة صندوق نص جديد، ثم اكتب فيه. اسحب من المقبض بالأعلى لتحريكه."}
+        {mode === "redact" &&
+          "اضغط على أي سطر نص (محدّد بإطار منقّط) لحذفه بحدوده الدقيقة تلقائيًا، أو اسحب يدويًا لتغطية أي جزء آخر من الصفحة."}
+        {mode === "move" &&
+          "اضغط على أي سطر نص (محدّد بإطار منقّط) لالتقاطه — ينحذف من مكانه ويطلع بصندوق قابل للتحريك والتعديل، اسحبه لمكانه الجديد."}
       </p>
 
       <div className="overflow-hidden rounded-2xl border border-line bg-white">
@@ -358,7 +402,7 @@ export function EditTool() {
           onMouseMove={handleStageMouseMove}
           onMouseUp={handleStageMouseUp}
           className="relative w-full select-none"
-          style={{ cursor: mode === "redact" ? "crosshair" : "text" }}
+          style={{ cursor: mode === "text" ? "text" : "crosshair" }}
         >
           <canvas
             ref={canvasRef}
@@ -370,7 +414,7 @@ export function EditTool() {
             </div>
           )}
 
-          {mode === "redact" &&
+          {(mode === "redact" || mode === "move") &&
             textBlocks.map((b, i) => (
               <div
                 key={i}
