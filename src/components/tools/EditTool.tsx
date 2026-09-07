@@ -433,7 +433,7 @@ export function EditTool() {
               <div
                 key={ed.id}
                 onMouseDown={(e) => startDrag(e, ed.id)}
-                className={`absolute cursor-move border-2 bg-white ${
+                className={`absolute cursor-move border-2 ${
                   activeId === ed.id ? "border-brand" : "border-brand/40"
                 }`}
                 style={{
@@ -441,6 +441,11 @@ export function EditTool() {
                   top: `${ed.yPct * 100}%`,
                   width: `${ed.widthPct * 100}%`,
                   height: `${ed.heightPct * 100}%`,
+                  // Match the exported fill exactly, sampled color and
+                  // all, so what's shown while editing can be trusted.
+                  backgroundColor: ed.color
+                    ? `rgb(${ed.color.map((c) => Math.round(c * 255)).join(",")})`
+                    : "white",
                 }}
               >
                 <button

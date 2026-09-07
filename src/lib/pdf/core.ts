@@ -118,6 +118,13 @@ export interface PageTextBlock {
  * origin and `height` its font size (both in PDF points) — an
  * ascent/descent split of 0.8/0.2 approximates the run's full glyph
  * height above and below that baseline, close enough for selection.
+ *
+ * PDF text is often broken into several short runs on the very same
+ * line (a font change, a bidi boundary, ...), which would otherwise
+ * make a whole visual line take several clicks to fully select — so
+ * consecutive runs sharing a baseline with only a small gap between
+ * them (ordinary letter/word spacing) are merged into one block, in
+ * their original content-stream order so RTL reads correctly.
  */
 export async function getPageTextBlocks(
   data: ArrayBuffer,
@@ -129,21 +136,50 @@ export async function getPageTextBlocks(
   const content = await page.getTextContent();
   const { width: pageWidth, height: pageHeight } = viewport;
 
-  const blocks: PageTextBlock[] = [];
+  interface Run {
+    text: string;
+    left: number;
+    right: number;
+    baseline: number;
+    height: number;
+  }
+
+  const runs: Run[] = [];
   for (const item of content.items) {
     if (!("str" in item) || !item.str.trim() || !item.width || !item.height) continue;
     const [, , , , x, baseline] = item.transform;
-    const top = baseline + item.height * 0.8;
-    const bottom = baseline - item.height * 0.2;
-    blocks.push({
-      text: item.str,
-      xPct: x / pageWidth,
-      yPct: (pageHeight - top) / pageHeight,
-      widthPct: item.width / pageWidth,
-      heightPct: (top - bottom) / pageHeight,
-      fontSize: item.height,
-    });
+    runs.push({ text: item.str, left: x, right: x + item.width, baseline, height: item.height });
   }
+
+  const groups: Run[][] = [];
+  for (const run of runs) {
+    const prev = groups.at(-1)?.at(-1);
+    const gap = prev
+      ? Math.max(0, run.left - prev.right, prev.left - run.right)
+      : Infinity;
+    if (prev && Math.abs(run.baseline - prev.baseline) < 0.5 && gap < prev.height * 1.5) {
+      groups.at(-1)!.push(run);
+    } else {
+      groups.push([run]);
+    }
+  }
+
+  const blocks: PageTextBlock[] = groups.map((group) => {
+    const left = Math.min(...group.map((r) => r.left));
+    const right = Math.max(...group.map((r) => r.right));
+    const baseline = group[0].baseline;
+    const height = Math.max(...group.map((r) => r.height));
+    const top = baseline + height * 0.8;
+    const bottom = baseline - height * 0.2;
+    return {
+      text: group.map((r) => r.text).join(""),
+      xPct: left / pageWidth,
+      yPct: (pageHeight - top) / pageHeight,
+      widthPct: (right - left) / pageWidth,
+      heightPct: (top - bottom) / pageHeight,
+      fontSize: height,
+    };
+  });
 
   await destroy();
   return blocks;
