@@ -1,5 +1,5 @@
 import { PDFDocument, degrees, rgb, StandardFonts } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
+import { renderPageToCanvas } from "./core";
 import { layoutParagraph } from "./arabicText";
 
 export async function fileToArrayBuffer(file: File): Promise<ArrayBuffer> {
@@ -249,74 +249,131 @@ export interface TextEdit {
 export type PdfEdit = RedactEdit | TextEdit;
 
 const ARABIC_FONT_URL = "/fonts/Amiri-Regular.ttf";
+const ARABIC_FONT_FAMILY = "Amiri";
+// A page carrying an edit is rasterized (see applyPdfEdits) at this many
+// pixels per PDF point — 2x gives ~144 DPI, sharp on screen and in print
+// without ballooning file size.
+const REDACT_RASTER_SCALE = 2;
 
-let cachedArabicFontBytes: ArrayBuffer | null = null;
-async function getArabicFontBytes(): Promise<ArrayBuffer> {
-  if (!cachedArabicFontBytes) {
-    const res = await fetch(ARABIC_FONT_URL);
-    cachedArabicFontBytes = await res.arrayBuffer();
+let arabicFontReady: Promise<void> | null = null;
+function ensureArabicCanvasFont(): Promise<void> {
+  if (!arabicFontReady) {
+    arabicFontReady = fetch(ARABIC_FONT_URL)
+      .then((res) => res.arrayBuffer())
+      .then(async (bytes) => {
+        const face = new FontFace(ARABIC_FONT_FAMILY, bytes);
+        await face.load();
+        document.fonts.add(face);
+      });
   }
-  return cachedArabicFontBytes;
+  return arabicFontReady;
 }
 
-/** Apply a set of redaction boxes and/or new text paragraphs to a PDF. */
+function colorToCss(color: [number, number, number]): string {
+  return `rgb(${color.map((c) => Math.round(c * 255)).join(",")})`;
+}
+
+/** Paints one edited page's redaction boxes and new text onto its raster canvas. */
+function drawEditsOnCanvas(canvas: HTMLCanvasElement, pageEdits: PdfEdit[]) {
+  const ctx = canvas.getContext("2d")!;
+
+  for (const edit of pageEdits) {
+    if (edit.type !== "redact") continue;
+    ctx.fillStyle = edit.color ? colorToCss(edit.color) : "white";
+    ctx.fillRect(
+      edit.xPct * canvas.width,
+      edit.yPct * canvas.height,
+      edit.widthPct * canvas.width,
+      edit.heightPct * canvas.height
+    );
+  }
+
+  for (const edit of pageEdits) {
+    if (edit.type !== "text" || !edit.text.trim()) continue;
+    const fontSize = edit.fontSize * REDACT_RASTER_SCALE;
+    ctx.font = `${fontSize}px ${ARABIC_FONT_FAMILY}`;
+    ctx.fillStyle = colorToCss(edit.color);
+    ctx.textBaseline = "alphabetic";
+
+    const boxX = edit.xPct * canvas.width;
+    const boxTop = edit.yPct * canvas.height;
+    const boxWidth = edit.widthPct * canvas.width;
+    const lineHeight = fontSize * 1.5;
+
+    const lines = layoutParagraph(edit.text, ctx, boxWidth);
+    lines.forEach((line, i) => {
+      if (!line.text) return;
+      // Canvas's own bidi/shaping engine handles the run correctly as
+      // long as direction+alignment match the paragraph's script — no
+      // manual glyph reordering needed (unlike drawing via pdf-lib).
+      ctx.direction = line.isRtl ? "rtl" : "ltr";
+      ctx.textAlign = line.isRtl ? "right" : "left";
+      const x = line.isRtl ? boxX + boxWidth : boxX;
+      ctx.fillText(line.text, x, boxTop + i * lineHeight + fontSize);
+    });
+  }
+}
+
+function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(async (blob) => {
+      if (!blob) {
+        reject(new Error("تعذر تحويل الصفحة المعدّلة إلى صورة."));
+        return;
+      }
+      resolve(new Uint8Array(await blob.arrayBuffer()));
+    }, "image/png");
+  });
+}
+
+/**
+ * Apply a set of redaction boxes and/or new text paragraphs to a PDF.
+ *
+ * A redaction that only drew a rectangle over the existing content stream
+ * left the original text objects intact underneath it: selecting,
+ * searching, or extracting the page's text still recovered whatever was
+ * "deleted". So any page carrying at least one edit is fully rasterized
+ * (rendered to an image with the edits painted on top) and rebuilt as an
+ * image-only page — no text object, "deleted" or otherwise, survives on
+ * it. Pages with no edits are copied through unchanged, keeping their
+ * real, selectable text.
+ */
 export async function applyPdfEdits(
   file: File,
   edits: PdfEdit[]
 ): Promise<Blob> {
   const bytes = await fileToArrayBuffer(file);
-  const doc = await PDFDocument.load(bytes);
-  const pages = doc.getPages();
+  const srcDoc = await PDFDocument.load(bytes);
+  const srcPages = srcDoc.getPages();
 
-  const redactions = edits.filter((e): e is RedactEdit => e.type === "redact");
-  const textEdits = edits.filter((e): e is TextEdit => e.type === "text");
-
-  for (const edit of redactions) {
-    const page = pages[edit.page - 1];
-    if (!page) continue;
-    const { width, height } = page.getSize();
-    const boxWidth = edit.widthPct * width;
-    const boxHeight = edit.heightPct * height;
-    page.drawRectangle({
-      x: edit.xPct * width,
-      y: height - edit.yPct * height - boxHeight,
-      width: boxWidth,
-      height: boxHeight,
-      color: edit.color ? rgb(...edit.color) : rgb(1, 1, 1),
-    });
+  const editsByPage = new Map<number, PdfEdit[]>();
+  for (const edit of edits) {
+    editsByPage.set(edit.page, [...(editsByPage.get(edit.page) ?? []), edit]);
   }
 
-  if (textEdits.length > 0) {
-    doc.registerFontkit(fontkit);
-    // subset:true corrupts glyphs that appear only once in the drawn text
-    // with this pdf-lib/fontkit combo, so the full font is embedded instead.
-    const font = await doc.embedFont(await getArabicFontBytes(), { subset: false });
+  if (edits.some((e) => e.type === "text")) {
+    await ensureArabicCanvasFont();
+  }
 
-    for (const edit of textEdits) {
-      const page = pages[edit.page - 1];
-      if (!page || !edit.text.trim()) continue;
-      const { width, height } = page.getSize();
-      const boxX = edit.xPct * width;
-      const boxTop = edit.yPct * height;
-      const boxWidth = edit.widthPct * width;
-      const lineHeight = edit.fontSize * 1.5;
+  const out = await PDFDocument.create();
 
-      const lines = layoutParagraph(edit.text, font, edit.fontSize, boxWidth);
-      lines.forEach((line, i) => {
-        if (!line.text) return;
-        const lineTop = boxTop + i * lineHeight;
-        const x = line.isRtl ? boxX + boxWidth - line.width : boxX;
-        page.drawText(line.text, {
-          x,
-          y: height - lineTop - edit.fontSize,
-          size: edit.fontSize,
-          font,
-          color: rgb(...edit.color),
-        });
-      });
+  for (let i = 0; i < srcPages.length; i++) {
+    const pageEdits = editsByPage.get(i + 1);
+    if (!pageEdits || pageEdits.length === 0) {
+      const [copied] = await out.copyPages(srcDoc, [i]);
+      out.addPage(copied);
+      continue;
     }
+
+    const { width, height } = srcPages[i].getSize();
+    const canvas = await renderPageToCanvas(bytes.slice(0), i + 1, width * REDACT_RASTER_SCALE);
+    drawEditsOnCanvas(canvas, pageEdits);
+
+    const image = await out.embedPng(await canvasToPngBytes(canvas));
+    const newPage = out.addPage([width, height]);
+    newPage.drawImage(image, { x: 0, y: 0, width, height });
   }
 
-  const outBytes = await doc.save();
+  const outBytes = await out.save();
   return new Blob([new Uint8Array(outBytes)], { type: "application/pdf" });
 }
